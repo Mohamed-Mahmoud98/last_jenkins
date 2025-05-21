@@ -1,0 +1,39 @@
+---
+- name: Install PHP and required modules
+  apt:
+    name:
+      - php
+      - libapache2-mod-php
+      - php-mysql
+    state: present
+    update_cache: yes
+
+- name: Ensure curl is installed
+  apt:
+    name: curl
+    state: present
+    update_cache: yes
+
+- name: Download WordPress using curl
+  command: curl -L -o /tmp/latest.tar.gz https://wordpress.org/latest.tar.gz
+  args:
+    creates: /tmp/latest.tar.gz
+
+- name: Extract WordPress
+  unarchive:
+    src: /tmp/latest.tar.gz
+    dest: /var/www/
+    remote_src: yes
+
+- name: Set permissions for WordPress files
+  file:
+    path: /var/www/wordpress
+    owner: www-data
+    group: www-data
+    recurse: yes
+
+- name: Configure WordPress wp-config.php
+  template:
+    src: wp-config.php.j2
+    dest: /var/www/wordpress/wp-config.php
+

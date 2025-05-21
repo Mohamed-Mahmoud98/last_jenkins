@@ -1,0 +1,27 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+
+- name: Install Apache
+  apt:
+    name: apache2
+    state: present
+
+- name: Enable Apache mod_rewrite
+  apache2_module:
+    name: rewrite
+    state: present
+
+- name: Change Apache DocumentRoot to /var/www/wordpress
+  lineinfile:
+    path: /etc/apache2/sites-enabled/000-default.conf
+    regexp: '^(\s*)DocumentRoot\s+/var/www/html'
+    line: '    DocumentRoot /var/www/wordpress'
+    backrefs: yes
+
+- name: Restart Apache to apply DocumentRoot change
+  service:
+    name: apache2
+    state: restarted
+
