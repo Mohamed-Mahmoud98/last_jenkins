@@ -6,7 +6,6 @@ provider "aws" {
 }
 
 
-
 # VPC Module
 module "vpc" {
 
