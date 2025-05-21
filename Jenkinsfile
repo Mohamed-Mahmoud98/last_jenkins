@@ -5,7 +5,7 @@ pipeline {
         TF_DIR = 'terraform'
         ANSIBLE_DIR = 'ansible'
         HOSTS_FILE = 'hosts.ini'
-        SSH_KEY_PATH = '/home/jenkins/.ssh/ec2_key.pem'  // Adjust if needed
+        LOCAL_SSH_KEY = 'ec2_key.pem'
     }
 
     stages {
@@ -40,7 +40,6 @@ pipeline {
                     def tfOutput = sh(script: "cd ${TF_DIR} && terraform output -json", returnStdout: true).trim()
                     def outputs = readJSON text: tfOutput
 
-                    // Save IPs to environment variables
                     env.WP_A_PUBLIC_IP = outputs.wordpress_server_a_public_ip.value
                     env.WP_B_PUBLIC_IP = outputs.wordpress_server_b_public_ip.value
                     env.MARIADB_PRIVATE_IP = outputs.mariadb_private_ip.value
@@ -57,23 +56,33 @@ pipeline {
 
         stage('Generate Ansible Files') {
             steps {
-                script {
-                    writeFile file: "${HOSTS_FILE}", text: """
+                withCredentials([file(credentialsId: 'EC2_SSH_KEY', variable: 'SSH_KEY')]) {
+                    script {
+                        // Copy the key and set permissions
+                        sh """
+                            echo "Preparing SSH key..."
+                            cp $SSH_KEY ${LOCAL_SSH_KEY}
+                            chmod 400 ${LOCAL_SSH_KEY}
+                        """
+
+                        // Write hosts.ini
+                        writeFile file: "${HOSTS_FILE}", text: """
 [jump_host]
-jump_host ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${SSH_KEY_PATH}
+jump_host ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 
 [wordpress]
-wordpress_server_a ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${SSH_KEY_PATH}
-wordpress_server_b ansible_host=${env.WP_B_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${SSH_KEY_PATH}
+wordpress_server_a ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
+wordpress_server_b ansible_host=${env.WP_B_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 
 [database]
-db_server ansible_host=${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${SSH_KEY_PATH} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${SSH_KEY_PATH} -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}"'
+db_server ansible_host=${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}"'
 
 [all:vars]
-ansible_ssh_common_args='-o IdentitiesOnly=yes'
+ansible_ssh_common_args='-o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
 """
 
-                    writeFile file: "${ANSIBLE_DIR}/playbook.yml", text: """
+                        // Write playbook.yml
+                        writeFile file: "${ANSIBLE_DIR}/playbook.yml", text: """
 - hosts: wordpress
   become: yes
   vars:
@@ -96,7 +105,8 @@ ansible_ssh_common_args='-o IdentitiesOnly=yes'
     - mariadb
 """
 
-                    writeFile file: "${ANSIBLE_DIR}/roles/php_wordpress/templates/wp-config.php.j2", text: """
+                        // Write wp-config.php.j2
+                        writeFile file: "${ANSIBLE_DIR}/roles/php_wordpress/templates/wp-config.php.j2", text: """
 <?php
 define('DB_NAME', 'wordpress');
 define('DB_USER', 'zozz');
@@ -113,6 +123,7 @@ if ( !defined('ABSPATH') )
 
 require_once(ABSPATH . 'wp-settings.php');
 """
+                    }
                 }
             }
         }
@@ -120,6 +131,7 @@ require_once(ABSPATH . 'wp-settings.php');
         stage('Run Ansible Playbook') {
             steps {
                 sh """
+                    echo "Running Ansible playbook..."
                     ansible-playbook -i ${HOSTS_FILE} ${ANSIBLE_DIR}/playbook.yml
                 """
             }
@@ -128,6 +140,8 @@ require_once(ABSPATH . 'wp-settings.php');
 
     post {
         always {
+            echo 'Cleaning up workspace and SSH key...'
+            sh "rm -f ${LOCAL_SSH_KEY}"
             cleanWs()
         }
     }
