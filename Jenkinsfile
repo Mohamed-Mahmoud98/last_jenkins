@@ -5,7 +5,7 @@ pipeline {
         TF_DIR = 'terraform'
         ANSIBLE_DIR = 'ansible'
         HOSTS_FILE = 'hosts.ini'
-        LOCAL_SSH_KEY = 'ec2_key.pem'
+        LOCAL_SSH_KEY = 'ec2_key.pem'  // Local filename for the SSH key
     }
 
     stages {
@@ -40,6 +40,12 @@ pipeline {
                     env.WP_A_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_instance_a_public_ip", returnStdout: true).trim()
                     env.WP_B_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_instance_b_public_ip", returnStdout: true).trim()
                     env.MARIADB_PRIVATE_IP = sh(script: "cd ${TF_DIR} && terraform output -raw mariadb_instance_private_ip", returnStdout: true).trim()
+
+                    // Print outputs to verify correctness
+                    echo "Extracted Terraform Outputs:"
+                    echo "WP_A_PUBLIC_IP = ${env.WP_A_PUBLIC_IP}"
+                    echo "WP_B_PUBLIC_IP = ${env.WP_B_PUBLIC_IP}"
+                    echo "MARIADB_PRIVATE_IP = ${env.MARIADB_PRIVATE_IP}"
                 }
             }
         }
@@ -55,27 +61,30 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'EC2_SSH_KEY', variable: 'SSH_KEY')]) {
                     script {
-                        // Prepare SSH key
+                        // Copy SSH private key from Jenkins credentials to local workspace file
                         sh """
                             echo "Preparing SSH key..."
-                            cp $SSH_KEY ${LOCAL_SSH_KEY}
+                            cp \$SSH_KEY ${LOCAL_SSH_KEY}
                             chmod 400 ${LOCAL_SSH_KEY}
                         """
 
-                        // Write hosts.ini
+                        // Write the Ansible hosts file with dynamic IPs and local SSH key path
                         writeFile file: "${HOSTS_FILE}", text: """
 [jump_host]
-jump_host ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
+${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 
 [wordpress]
-wordpress_server_a ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
-wordpress_server_b ansible_host=${env.WP_B_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
+${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
+${env.WP_B_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 
 [database]
-db_server ansible_host=${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}"'
+
+[all:vars]
+ansible_ssh_common_args='-o IdentitiesOnly=yes'
 """
 
-                        // Write Ansible playbook
+                        // Write Ansible playbook.yml
                         writeFile file: "${ANSIBLE_DIR}/playbook.yml", text: """
 - hosts: wordpress
   become: yes
