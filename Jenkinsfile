@@ -5,13 +5,22 @@ pipeline {
         TF_DIR = 'terraform'
         ANSIBLE_DIR = 'ansible'
         HOSTS_FILE = 'hosts.ini'
-        LOCAL_SSH_KEY = 'ec2_key.pem'  // Local filename for the SSH key
+        LOCAL_SSH_KEY = 'ec2_key.pem'
     }
 
     stages {
         stage('Checkout Code') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Verify Tools') {
+            steps {
+                sh '''
+                    terraform --version
+                    ansible --version
+                '''
             }
         }
 
@@ -26,9 +35,9 @@ pipeline {
                         export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
 
                         cd ${TF_DIR}
-                        terraform init
-                        terraform plan -out=tfplan
-                        terraform apply -auto-approve tfplan
+                        terraform init -input=false
+                        terraform plan -out=tfplan -input=false
+                        terraform apply -auto-approve -input=false tfplan
                     '''
                 }
             }
@@ -41,7 +50,6 @@ pipeline {
                     env.WP_B_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_instance_b_public_ip", returnStdout: true).trim()
                     env.MARIADB_PRIVATE_IP = sh(script: "cd ${TF_DIR} && terraform output -raw mariadb_instance_private_ip", returnStdout: true).trim()
 
-                    // Print outputs to verify correctness
                     echo "Extracted Terraform Outputs:"
                     echo "WP_A_PUBLIC_IP = ${env.WP_A_PUBLIC_IP}"
                     echo "WP_B_PUBLIC_IP = ${env.WP_B_PUBLIC_IP}"
@@ -53,7 +61,7 @@ pipeline {
         stage('Wait for EC2 to Boot') {
             steps {
                 echo 'Waiting for EC2 instances to initialize...'
-                sleep time: 150, unit: 'SECONDS'
+                sleep time: 60, unit: 'SECONDS'  // Increased wait time
             }
         }
 
@@ -61,31 +69,34 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'EC2_SSH_KEY', variable: 'SSH_KEY')]) {
                     script {
-                        // Copy SSH private key from Jenkins credentials to local workspace file
+                        // Prepare SSH key
                         sh """
-                            echo "Preparing SSH key..."
                             cp \$SSH_KEY ${LOCAL_SSH_KEY}
-                            chmod 400 ${LOCAL_SSH_KEY}
+                            chmod 600 ${LOCAL_SSH_KEY}
                         """
 
-                        // Write the Ansible hosts file with dynamic IPs and local SSH key path
-                        writeFile file: "${HOSTS_FILE}", text: """
-[jump_host]
-${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
+                        // Create Ansible directory structure if not exists
+                        sh """
+                            mkdir -p ${ANSIBLE_DIR}/roles/php_wordpress/templates
+                        """
 
+                        // Write hosts file
+                        writeFile file: "${HOSTS_FILE}", text: """
 [wordpress]
 ${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 ${env.WP_B_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 
 [database]
-${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}"'
+${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -W %h:%p -o StrictHostKeyChecking=no ubuntu@${env.WP_A_PUBLIC_IP}"'
 
 [all:vars]
-ansible_ssh_common_args='-o IdentitiesOnly=yes'
+ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 """
 
-                        // Write Ansible playbook.yml
+                        // Write playbook
                         writeFile file: "${ANSIBLE_DIR}/playbook.yml", text: """
+---
 - hosts: wordpress
   become: yes
   vars:
@@ -103,28 +114,18 @@ ansible_ssh_common_args='-o IdentitiesOnly=yes'
     db_name: wordpress
     db_user: zozz
     db_password: 12341234
-    db_host: ${env.MARIADB_PRIVATE_IP}
   roles:
     - mariadb
 """
-
-                        // Write wp-config.php.j2 template
+                        
+                        // Write wp-config template
                         writeFile file: "${ANSIBLE_DIR}/roles/php_wordpress/templates/wp-config.php.j2", text: """
 <?php
-define('DB_NAME', 'wordpress');
-define('DB_USER', 'zozz');
-define('DB_PASSWORD', '12341234');
-define('DB_HOST', '${env.MARIADB_PRIVATE_IP}');
-define('DB_CHARSET', 'utf8');
-define('DB_COLLATE', '');
-
-\$table_prefix = 'wp_';
-define('WP_DEBUG', false);
-
-if ( !defined('ABSPATH') )
-    define('ABSPATH', dirname(__FILE__) . '/');
-
-require_once(ABSPATH . 'wp-settings.php');
+define('DB_NAME', '{{ db_name }}');
+define('DB_USER', '{{ db_user }}');
+define('DB_PASSWORD', '{{ db_password }}');
+define('DB_HOST', '{{ db_host }}');
+// Rest of your config...
 """
                     }
                 }
@@ -134,8 +135,8 @@ require_once(ABSPATH . 'wp-settings.php');
         stage('Run Ansible Playbook') {
             steps {
                 sh """
-                    echo "Running Ansible playbook..."
-                    ansible-playbook -i ${HOSTS_FILE} ${ANSIBLE_DIR}/playbook.yml
+                    cd ${ANSIBLE_DIR}
+                    ansible-playbook -i ../${HOSTS_FILE} playbook.yml -vvv
                 """
             }
         }
@@ -143,7 +144,7 @@ require_once(ABSPATH . 'wp-settings.php');
 
     post {
         always {
-            echo 'Cleaning up workspace and SSH key...'
+            echo 'Cleaning up...'
             sh "rm -f ${LOCAL_SSH_KEY}"
             cleanWs()
         }
