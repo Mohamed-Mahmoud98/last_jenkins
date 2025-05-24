@@ -72,10 +72,7 @@ wordpress_server_a ansible_host=${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansibl
 wordpress_server_b ansible_host=${env.WP_B_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
 
 [database]
-db_server ansible_host=${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}"'
-
-[all:vars]
-ansible_ssh_common_args='-o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
+db_server ansible_host=${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY} ansible_ssh_common_args='-o ProxyCommand="ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@${env.WP_A_PUBLIC_IP}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 """
 
                         // Write Ansible playbook
