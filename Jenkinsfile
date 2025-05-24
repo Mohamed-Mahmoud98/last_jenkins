@@ -37,12 +37,9 @@ pipeline {
         stage('Extract Terraform Outputs') {
             steps {
                 script {
-                    def tfOutput = sh(script: "cd ${TF_DIR} && terraform output -json", returnStdout: true).trim()
-                    def outputs = readJSON text: tfOutput
-
-                    env.WP_A_PUBLIC_IP = outputs.wordpress_server_a_public_ip.value
-                    env.WP_B_PUBLIC_IP = outputs.wordpress_server_b_public_ip.value
-                    env.MARIADB_PRIVATE_IP = outputs.mariadb_private_ip.value
+                    env.WP_A_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_server_a_public_ip", returnStdout: true).trim()
+                    env.WP_B_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_server_b_public_ip", returnStdout: true).trim()
+                    env.MARIADB_PRIVATE_IP = sh(script: "cd ${TF_DIR} && terraform output -raw mariadb_private_ip", returnStdout: true).trim()
                 }
             }
         }
@@ -58,7 +55,7 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'EC2_SSH_KEY', variable: 'SSH_KEY')]) {
                     script {
-                        // Copy the key and set permissions
+                        // Prepare SSH key
                         sh """
                             echo "Preparing SSH key..."
                             cp $SSH_KEY ${LOCAL_SSH_KEY}
@@ -81,7 +78,7 @@ db_server ansible_host=${env.MARIADB_PRIVATE_IP} ansible_user=ubuntu ansible_ssh
 ansible_ssh_common_args='-o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
 """
 
-                        // Write playbook.yml
+                        // Write Ansible playbook
                         writeFile file: "${ANSIBLE_DIR}/playbook.yml", text: """
 - hosts: wordpress
   become: yes
@@ -105,7 +102,7 @@ ansible_ssh_common_args='-o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
     - mariadb
 """
 
-                        // Write wp-config.php.j2
+                        // Write wp-config.php.j2 template
                         writeFile file: "${ANSIBLE_DIR}/roles/php_wordpress/templates/wp-config.php.j2", text: """
 <?php
 define('DB_NAME', 'wordpress');
