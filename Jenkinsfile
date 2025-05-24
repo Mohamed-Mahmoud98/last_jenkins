@@ -4,8 +4,8 @@ pipeline {
     environment {
         TF_DIR = 'terraform'
         ANSIBLE_DIR = 'ansible'
-        HOSTS_FILE = 'hosts.ini'
-        LOCAL_SSH_KEY = 'ec2_key.pem'
+        HOSTS_FILE = "${WORKSPACE}/hosts.ini"
+        LOCAL_SSH_KEY = "${WORKSPACE}/ec2_key.pem"  // Absolute path
     }
 
     stages {
@@ -61,7 +61,7 @@ pipeline {
         stage('Wait for EC2 to Boot') {
             steps {
                 echo 'Waiting for EC2 instances to initialize...'
-                sleep time: 60, unit: 'SECONDS'  // Increased wait time
+                sleep time: 180, unit: 'SECONDS'
             }
         }
 
@@ -69,18 +69,18 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'EC2_SSH_KEY', variable: 'SSH_KEY')]) {
                     script {
-                        // Prepare SSH key
+                        // Prepare SSH key with absolute path
                         sh """
                             cp \$SSH_KEY ${LOCAL_SSH_KEY}
                             chmod 600 ${LOCAL_SSH_KEY}
                         """
 
-                        // Create Ansible directory structure if not exists
+                        // Create Ansible directory structure
                         sh """
                             mkdir -p ${ANSIBLE_DIR}/roles/php_wordpress/templates
                         """
 
-                        // Write hosts file
+                        // Write hosts file with absolute paths
                         writeFile file: "${HOSTS_FILE}", text: """
 [wordpress]
 ${env.WP_A_PUBLIC_IP} ansible_user=ubuntu ansible_ssh_private_key_file=${LOCAL_SSH_KEY}
@@ -117,7 +117,7 @@ ansible_ssh_common_args='-o StrictHostKeyChecking=no'
   roles:
     - mariadb
 """
-                        
+
                         // Write wp-config template
                         writeFile file: "${ANSIBLE_DIR}/roles/php_wordpress/templates/wp-config.php.j2", text: """
 <?php
@@ -125,8 +125,37 @@ define('DB_NAME', '{{ db_name }}');
 define('DB_USER', '{{ db_user }}');
 define('DB_PASSWORD', '{{ db_password }}');
 define('DB_HOST', '{{ db_host }}');
-// Rest of your config...
+define('DB_CHARSET', 'utf8');
+define('DB_COLLATE', '');
+
+\$table_prefix = 'wp_';
+define('WP_DEBUG', false);
+
+if ( !defined('ABSPATH') )
+    define('ABSPATH', dirname(__FILE__) . '/');
+
+require_once(ABSPATH . 'wp-settings.php');
 """
+                    }
+                }
+            }
+        }
+
+        stage('Verify SSH Connectivity') {
+            steps {
+                script {
+                    try {
+                        sh """
+                            ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no ubuntu@${env.WP_A_PUBLIC_IP} 'hostname'
+                            ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no ubuntu@${env.WP_B_PUBLIC_IP} 'hostname'
+                        """
+                    } catch (Exception e) {
+                        echo "SSH verification failed, waiting 30 seconds and retrying..."
+                        sleep 30
+                        sh """
+                            ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no ubuntu@${env.WP_A_PUBLIC_IP} 'hostname'
+                            ssh -i ${LOCAL_SSH_KEY} -o StrictHostKeyChecking=no ubuntu@${env.WP_B_PUBLIC_IP} 'hostname'
+                        """
                     }
                 }
             }
@@ -134,19 +163,46 @@ define('DB_HOST', '{{ db_host }}');
 
         stage('Run Ansible Playbook') {
             steps {
-                sh """
-                    cd ${ANSIBLE_DIR}
-                    ansible-playbook -i ../${HOSTS_FILE} playbook.yml -vvv
-                """
+                script {
+                    try {
+                        sh """
+                            echo "Current workspace: ${WORKSPACE}"
+                            echo "Key file location: ${LOCAL_SSH_KEY}"
+                            ls -la ${LOCAL_SSH_KEY}
+                            
+                            cd ${ANSIBLE_DIR}
+                            ANSIBLE_SSH_ARGS='-o StrictHostKeyChecking=no' \
+                            ansible-playbook -i ${HOSTS_FILE} playbook.yml -vvv
+                        """
+                    } catch (Exception e) {
+                        echo "Ansible playbook failed, attempting to gather debug info..."
+                        sh """
+                            cd ${ANSIBLE_DIR}
+                            ANSIBLE_DEBUG=1 ansible-playbook -i ${HOSTS_FILE} playbook.yml -vvvv
+                        """
+                        error("Ansible playbook execution failed")
+                    }
+                }
             }
         }
     }
 
     post {
         always {
-            echo 'Cleaning up...'
+            echo 'Cleaning up workspace...'
             sh "rm -f ${LOCAL_SSH_KEY}"
             cleanWs()
+        }
+        failure {
+            echo 'Pipeline failed, sending notification...'
+            // Add notification logic here (email, Slack, etc.)
+        }
+        success {
+            echo 'Pipeline succeeded! WordPress should now be accessible.'
+            script {
+                echo "WordPress Instance A: http://${env.WP_A_PUBLIC_IP}"
+                echo "WordPress Instance B: http://${env.WP_B_PUBLIC_IP}"
+            }
         }
     }
 }
