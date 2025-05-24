@@ -37,9 +37,9 @@ pipeline {
         stage('Extract Terraform Outputs') {
             steps {
                 script {
-                    env.WP_A_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_server_a_public_ip", returnStdout: true).trim()
-                    env.WP_B_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_server_b_public_ip", returnStdout: true).trim()
-                    env.MARIADB_PRIVATE_IP = sh(script: "cd ${TF_DIR} && terraform output -raw mariadb_private_ip", returnStdout: true).trim()
+                    env.WP_A_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_instance_a_public_ip", returnStdout: true).trim()
+                    env.WP_B_PUBLIC_IP = sh(script: "cd ${TF_DIR} && terraform output -raw wordpress_instance_b_public_ip", returnStdout: true).trim()
+                    env.MARIADB_PRIVATE_IP = sh(script: "cd ${TF_DIR} && terraform output -raw mariadb_instance_private_ip", returnStdout: true).trim()
                 }
             }
         }
